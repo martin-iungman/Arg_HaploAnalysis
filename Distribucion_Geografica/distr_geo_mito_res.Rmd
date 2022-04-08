@@ -1,0 +1,260 @@
+---
+title: "Distribucion Geografico de origen mitocondrial por Residencia"
+author: "Martin Iungman"
+date: "9/3/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning=F, message=F )
+```
+
+```{r lib, echo=F, results='hide'}
+library(tidyverse)
+library(gplots)
+library(spdep) 
+library(GWmodel)
+library(rgdal)
+library(readxl)
+library(RColorBrewer)
+library(knitr)
+library(reactable)
+library(gridExtra)
+my.palette <- brewer.pal(n = 9, name = "OrRd")
+script<-"distribucion_res"
+spat.data=readOGR(dsn="data/Mapas_Arg/provincia.shp",
+                  layer="provincia" )
+spat.data$fna<-c("CABA", "Neuquen", "San Luis", "Santa Fe", "La Rioja", "Catamarca", "Tucuman", "Chaco", "Formosa", "Santa Cruz", "Chubut", "Mendoza", "Cordoba", "Entre Rios", "San Juan", "Jujuy", "Sgo. del Estero", "Rio Negro", "Bs. As.", "Corrientes", "Misiones", "Salta", "La Pampa", "Tierra del Fuego")
+spat.data$nam<-c("CABA", "Neuquen", "San Luis", "Santa Fe", "La Rioja", "Catamarca", "Tucuman", "Chaco", "Formosa", "Santa Cruz", "Chubut", "Mendoza", "Cordoba", "Entre Rios", "San Juan", "Jujuy", "Sgo. del Estero", "Rio Negro", "Bs. As.", "Corrientes", "Misiones", "Salta", "La Pampa", "Tierra del Fuego")
+
+```
+
+## Cargo data
+Excel sin tildes
+
+```{r load}
+haplotipos<-read_tsv("data/2021.08.26 - Haplotipos ADNmt.txt") 
+reactable(head(haplotipos[,c(1:6, 42)]))
+```
+
+### Asocio las Provincias con las regiones
+
+```{r prov_data}
+Provincias<-haplotipos$Residencia%>%unique()%>%.[1:24]%>%sort()
+Region<-c("Buenos Aires", "CABA", "Noroeste", "Noreste", "Patagonia", "Centro", "Noreste", "Noreste", "Noreste", "Noroeste", "Centro", "Noroeste", "Centro", "Noreste", "Patagonia", "Patagonia", "Noroeste", "Noroeste", "Centro", "Patagonia", "Noreste", "Noroeste", "Patagonia" , "Noroeste")
+Prov_Reg<-data.frame(Provincias, Region)
+haplotipos<-left_join(haplotipos,Prov_Reg, by=c("Residencia"="Provincias") )%>%rename(Region_nac="Region")
+haplotipos<-left_join(haplotipos,Prov_Reg, by=c("Residencia"="Provincias") )%>%rename(Region_res="Region")
+
+reactable(Prov_Reg)
+```
+
+## Segun Haplogrupo (Nativoamericanos) y Provincia de Residencia
+
+```{r Hg_Prov_res}
+nativo<-haplotipos[,c(1:6, 42,225,226)]%>%filter(Origen=="NativoAmericano")
+hg_list<-nativo%>%group_by(Hg_analisis)%>%nest()
+hg_list_res<-hg_list
+hg_list_res$data<-hg_list_res$data%>%map(~.x%>%group_by(Residencia)%>%summarize(count=n()))
+
+long_table_res<-unnest(hg_list_res, col=c(data))%>%
+  group_by(Hg_analisis)%>%mutate(n_Hg=sum(count), 
+                                 Distr_Hg=count/n_Hg)%>%ungroup()%>%
+  group_by(Residencia)%>%mutate(n_Prov=sum(count),
+                                Distr_Prov=count/n_Prov)
+
+wide_Hg_abs_res<-long_table_res%>%select(Hg_analisis,count, Residencia)%>%pivot_wider(names_from = Hg_analisis, values_from = count)
+wide_Hg_abs_res<-wide_Hg_abs_res%>%mutate_all(~replace(., is.na(.), 0))
+
+wide_Hg_rel_res<-wide_Hg_abs_res%>%rowwise()%>%mutate(total=sum(c_across(A2:D4h3a), na.rm=T))
+wide_Hg_rel_res<-wide_Hg_rel_res%>%mutate(across(where(is.numeric), ~.x/total))
+
+wide_Prov_abs_res<-long_table_res%>%pivot_wider(names_from = Residencia, values_from=count)
+wide_Prov_abs_res<-wide_Prov_abs_res%>%mutate_all(~replace(., is.na(.), 0))
+wide_Prov_abs_res<-wide_Prov_abs_res%>%mutate(total=rowSums(across(where(is.numeric))))
+wide_Prov_rel_res<-wide_Prov_abs_res%>%mutate(across(where(is.numeric), ~.x/total))
+``` 
+Cuantos Nativoamericanos hay por Haplogrupo?
+```{r tab} 
+kable(table(nativo$Hg_analisis))
+```
+
+### Heatmaps
+#### valores absolutos
+A partir de los valores absolutos de individuos por haplogrupo por provincia de residencia, ponderado por fila. Es decir, que muestra qué haplogrupos (Hg) estan mas representados en esa provincia (blanco) y cuales menos (rojo), respecto a que esten los seis Hg igualmente representados en la provincia (naranja claro). 
+
+El orden en que aparecen las provincias y los haplogrupos responden a un clustering (agrupamiento) jerarquico que se observa en el dendrograma. El clustering implica buscar que conjuntos son mas parecidos entre si (por ejemplo en este caso, Mendoza y Tucumán)
+
+Como se ve, B4a1 y D4h3a estan muy poco representados en general, por lo que repito el grafico quitandolas para observar mejor las diferencias entre los otros haplogrupos
+
+```{r heat1}
+df_hm<-wide_Hg_abs_res%>%column_to_rownames("Residencia")%>%as.matrix()
+heatmap.2(df_hm, scale="row", trace="none",  cexRow = 0.7, na.color = "darkgrey", dendrogram="none")
+df_hm_filt<-wide_Hg_abs_res%>%select(-D4h3a, -B4a1)%>%column_to_rownames("Residencia")%>%as.matrix()
+heatmap.2(df_hm_filt, scale="row", trace="none",  cexRow = 0.7, na.color = "darkgrey")
+``` 
+
+#### Valores relativos
+
+Repito lo mismo, pero relativizando previamente a la poblacion nativa de cada provincia. Es practicamente lo mismo que los graficos anteriores, cambia la forma en que se establece la escala de colores: ahora en vez de ser cuanto se aparta de la media, representa directamente la frecuencia.  
+
+```{r heat2}
+df_hm2<-wide_Hg_rel_res%>%select(-total)%>%column_to_rownames("Residencia")%>%as.matrix()
+df_hm2_filt<-wide_Hg_rel_res%>%select(-D4h3a, -B4a1, -total)%>%column_to_rownames("Residencia")%>%as.matrix()
+
+heatmap.2(df_hm2,  trace="none", dendrogram = "row", cexRow = 0.7, na.color = "darkgrey")
+heatmap.2(df_hm2_filt,  trace="none", dendrogram = "row", cexRow = 0.7, na.color = "darkgrey")
+```
+
+#### Valores relativos 2
+
+Estos tambien estan hechos a partir de las frecuencias por provincia, pero relativizado luego por haplogrupo. Es decir, para un haplogrupo, las casillas mas blancas son provincias donde la frecuencia de ese haplogrupo es mayor a la media de todas las provincias. Podemos ver asi en que provincias es mas tipico o menos tipico un determinado haplogrupo (en los otros veiamos que haplogrupo era mas tipico en cada provincia)
+
+Por ejemplo, Catamarca tiene una frecuencia de D1 mas alta que el resto de las provincias (aca amarillo/blanco es mayor frecuencia de ese haplogrupo en la provincia)
+
+```{r heat2_col}
+heatmap.2(df_hm2,  scale="col", trace="none", dendrogram = "row", cexRow = 0.7, na.color = "darkgrey")
+heatmap.2(df_hm2_filt,  scale="col", trace="none", dendrogram = "row", cexRow = 0.7, na.color = "darkgrey")
+```
+
+#### Representacion geografica
+Mapas a partir de las frecuencias por provincia
+(ahora rojo es mayor frecuencia!)
+
+```{r map1, fig.show="hold", fig.height=20}
+par(mar = c(2,2,2,2))
+multiple_maps<-function(spat.data, df, cols){
+  map=list()
+  for (i in cols) {
+    HG<-df[,c(1,i)]
+    sp<-spat.data
+    sp@data<-full_join(sp@data, HG, by=c("fna"="Residencia"))
+    map[[i-1]]<-spplot(sp, names(df)[i], col.regions = my.palette, cut=8, col = "transparent", main=names(df)[i]) 
+  }
+  return(map)
+}
+maps=multiple_maps(spat.data, wide_Hg_rel_res, seq(2,length(wide_Hg_rel_res)-1))
+grid.arrange(maps[[1]],maps[[2]], maps[[3]],maps[[4]], maps[[5]], maps[[6]], ncol=2,nrow=3)
+```
+
+## Segun Haplogrupo (Nativoamericanos) y Region de residencia
+
+```{r Hg_Reg_res}
+hg_list_res2<-hg_list
+hg_list_res2$data<-hg_list_res2$data%>%map(~.x%>%group_by(Region_res)%>%summarize(count=n()))
+
+long_table_res2<-unnest(hg_list_res2, col=c(data))%>%
+  group_by(Hg_analisis)%>%mutate(n_Hg=sum(count), 
+                                 Distr_Hg=count/n_Hg)%>%ungroup()%>%
+  group_by(Region_res)%>%mutate(n_Prov=sum(count),
+                                Distr_Prov=count/n_Prov)
+
+wide_Hg_abs_res2<-long_table_res2%>%select(Hg_analisis,count, Region_res)%>%pivot_wider(names_from = Hg_analisis, values_from = count)
+wide_Hg_abs_res2<-wide_Hg_abs_res2%>%mutate_all(~replace(., is.na(.), 0))
+
+wide_Hg_rel_res2<-wide_Hg_abs_res2%>%rowwise()%>%mutate(total=sum(c_across(A2:D4h3a)))
+wide_Hg_rel_res2<-wide_Hg_rel_res2%>%mutate(across(where(is.numeric), ~.x/total))
+
+
+wide_Prov_abs_res2<-long_table_res2%>%pivot_wider(names_from = Region_res, values_from=count)
+wide_Prov_abs_res2<-wide_Prov_abs_res2%>%mutate_all(~replace(., is.na(.), 0))
+wide_Prov_abs_res2<-wide_Prov_abs_res2%>%mutate(total=rowSums(across(where(is.numeric))))
+wide_Prov_rel_res2<-wide_Prov_abs_res2%>%mutate(across(where(is.numeric), ~.x/total)) 
+```
+
+Mismo analisis que antes pero ahora por regiones, en vez de provincias. De nuevo a partir de las frecuencias de cada haplogrupo pero en las regiones
+El primero es sin relativizar, ya que se relativizo previamente al obtener las frecuencias (que haplotipo esta mas sobrerrespresentado en cada region)
+El segundo es relativizado por columnas (en que region esta mas sobrerepresentado cada haplogrupo)
+
+```{r heat3, echo=F, eval=F}
+df_hm_reg<-wide_Hg_abs_res2%>%column_to_rownames("Region_res")%>%as.matrix()
+df_hm_reg_filt<-wide_Hg_abs_res2%>%select(-D4h3a, -B4a1)%>%column_to_rownames("Region_res")%>%as.matrix()
+
+heatmap.2(df_hm_reg_filt, scale="row", trace="none",  cexRow = 0.5, na.color = "darkgrey")
+heatmap.2(df_hm_reg, scale="col", trace="none")
+```
+```{r heat4}
+df_hm_reg2<-wide_Hg_rel_res2%>%select(-total)%>%column_to_rownames("Region_res")%>%as.matrix()
+df_hm_reg2_filt<-wide_Hg_rel_res2%>%select(-D4h3a, -B4a1, -total)%>%column_to_rownames("Region_res")%>%as.matrix()
+heatmap.2(df_hm_reg2_filt,  trace="none", dendrogram = "row", cexRow = 0.7, na.color = "darkgrey")
+heatmap.2(df_hm_reg2_filt,  scale="col", trace="none", dendrogram = "row", cexRow = 0.7, na.color = "darkgrey")
+```
+
+El haplogrupo de mayor frecuencia en todas las regiones es C1, y donde tiene mayor frecuencia es Noroeste. El D1 tiene mayor proporcion en Patagonia. El B2 tiene mayor frecuencia en CABA, y el A2 en Noreste. 
+
+#### Mapas con frecuencias para cad Hg
+
+```{r maps2, fig.show='hold', fig.height=20}
+wide_Hg_rel_res_reg<-left_join(Prov_Reg, wide_Hg_rel_res2, by=c("Region"="Region_res"))
+multiple_maps<-function(spat.data, df, cols){
+  map=list()
+  for (i in cols) {
+    HG<-df[,c(1,i)]
+    sp<-spat.data
+    sp@data<-full_join(sp@data, HG, by=c("fna"="Provincias"))
+    map[[i-2]]<-spplot(sp, names(df)[i], col.regions = my.palette, cut=8, col = "transparent", main=names(df)[i]) 
+  }
+  return(map)
+}
+maps=multiple_maps(spat.data, wide_Hg_rel_res_reg, seq(3,length(wide_Hg_rel_res)))
+grid.arrange(maps[[1]],maps[[2]], maps[[3]],maps[[4]], maps[[5]], maps[[6]], ncol=2,nrow=3)
+```
+
+
+## Por Origen y Provincia de residencia
+
+
+#### Cuantos jovenes por Origen?
+```{r tab2}
+kable(table(haplotipos$Origen))
+```
+
+```{r origen_prov}
+origen_df<-haplotipos%>%select(Origen,Residencia)%>%group_by(Origen, Residencia)%>%summarize(count=n())%>%filter(!is.na(Origen))
+origen_df<-origen_df%>%group_by(Residencia)%>%mutate(n_Prov=sum(count), origen_rel=count/n_Prov)
+wide_origen_rel<-origen_df%>%filter(Origen!="Desconocido")%>%select(-count, -n_Prov)%>%pivot_wider(names_from = Origen, values_from=origen_rel)%>%mutate_all(~replace(., is.na(.), 0))
+wide_origen_rel_matrix<-wide_origen_rel%>%column_to_rownames("Residencia")%>%as.matrix()
+```
+
+Como vemos el linaje africano es el menos frecuente en todas las provincias, seguido por el Euroasiatico (primera figura)
+
+Al relativizar por origen (segunda Figura), vemos que la mayor frecuencia de linaje africano esta en Corrientes, Euroasiático en Formosa, y Nativoamericano en La Pampa, La Rioja y Tucuman.
+
+```{r heat5}
+heatmap.2(wide_origen_rel_matrix, trace="none", dendrogram = "none", cexRow = 0.5, cexCol = 0.9, density.info = "density" , margins = c(8,8))
+heatmap.2(wide_origen_rel_matrix, trace="none",scale="col", dendrogram = "none", cexRow = 0.5, cexCol = 0.9, density.info = "density" , margins = c(8,8))
+```
+
+
+## Por Origen y Región
+
+Frecuencias relativizadas por origen
+
+```{r origen_reg}
+origen_df<-haplotipos%>%filter(Origen!="Desconocido")%>%select(Origen, Region_res)%>%group_by(Origen, Region_res)%>%summarize(count=n())%>%filter(!is.na(Origen))
+origen_df<-origen_df%>%group_by(Region_res)%>%mutate(n_Prov=sum(count), origen_rel=count/n_Prov)
+wide_origen_rel_reg<-origen_df%>%select(-count, -n_Prov)%>%pivot_wider(names_from = Origen, values_from=origen_rel)%>%mutate_all(~replace(., is.na(.), 0))
+wide_origen_rel_reg_matrix<-wide_origen_rel_reg%>%column_to_rownames("Region_res")%>%as.matrix()
+heatmap.2(wide_origen_rel_reg_matrix, trace="none", dendrogram = "none", cexRow = 0.5, cexCol = 0.9, density.info = "density" , margins = c(8,8), scale="col")
+```
+
+
+#### Mapa de frecuencias
+
+```{r maps3, fig.show='hold', fig.height=20}
+wide_origen_rel_reg_df<-left_join(Prov_Reg, wide_origen_rel_reg, by=c("Region"="Region_res"))
+multiple_maps<-function(spat.data, df, cols){
+  map=list()
+  for (i in cols) {
+    HG<-df[,c(1,i)]
+    sp<-spat.data
+    sp@data<-full_join(sp@data, HG, by=c("fna"="Provincias"))
+    map[[i-2]]<-spplot(sp, names(df)[i], col.regions = my.palette, cut=8, col = "transparent", main=names(HG)[2]) 
+  }
+  return(map)
+}
+maps=multiple_maps(spat.data, wide_origen_rel_reg_df, seq(3,length(wide_origen_rel_reg_df)))
+grid.arrange(maps[[1]],maps[[2]], maps[[3]], ncol=2,nrow=2)
+```
+
+

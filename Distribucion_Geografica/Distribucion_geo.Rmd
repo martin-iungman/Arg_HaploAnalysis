@@ -1,0 +1,204 @@
+---
+title: "Jovenenes vs Censos"
+author: "Martin Iungman"
+date: "9/3/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, warning = F, message=F)
+```
+
+## Representatividad geografica de las muestras de jovenes
+
+El objetivo es comparar como se distribuye geograficamente los jovenes de las bases de datos, respecto a la polacion argentina, tanto en los 80 como en el 2010
+
+La informacion de ambos censos esta en esta tabla. Las columnas "prop" refieren a los datos en porcentaje de la poblacion de la epoca.
+
+```{r carga_censo}
+library(tidyverse)
+library(knitr)
+library(readxl)
+censos<-read_csv("data/Censos 1980-2010.txt")
+censos2<-censos%>%mutate(prop_censo_1980=censo_1980*100/sum(censos$censo_1980), prop_censo_2010=censo_2010*100/sum(censos$censo_2010))
+kable(censos2)
+```
+
+
+Y a continuacion la info de los 2709 jovenes M
+
+Value: Numero de personas con ese nacimiento y residencia
+
+Nacimiento_jovenes y Residencia_jovenes: Numero de jovenes con ese nacimiento o residencia (se van a repetir los valores)
+
+migra: Si refiere a individuos que se quedaron en la misma provincia o no
+
+migra_nac y migra_res: Numero de individuos que nacieron o residieron (respectivamente) en esa provincia
+
+migra_nac_rel: porcentaje de jovenes migrantes respecto al total nacido en la provincia
+
+migra_res_rel= porcentaje de jovenes migrantes respecto al total que reside en la provincia
+```{r ht}
+haplotipos<-read_tsv("data/2021.08.26 - Haplotipos ADNmt.txt") #sin tildes
+Provincias<-haplotipos$Residencia%>%unique()%>%.[1:24]%>%sort()
+Region<-c("Buenos Aires", "CABA", "Noroeste", "Noreste", "Patagonia", "Centro", "Noreste", "Noreste", "Noreste", "Noroeste", "Centro", "Noroeste", "Centro", "Noreste", "Patagonia", "Patagonia", "Noroeste", "Noroeste", "Centro", "Patagonia", "Noreste", "Noroeste", "Patagonia" , "Noroeste")
+Prov_Reg<-data.frame(Provincias, Region)
+haplotipos<-left_join(haplotipos,Prov_Reg, by=c("Nacimiento"="Provincias") )%>%rename(Region_nac="Region")
+haplotipos<-left_join(haplotipos,Prov_Reg, by=c("Residencia"="Provincias") )%>%rename(Region_res="Region")
+
+data_prov<-select(haplotipos, Nacimiento, Residencia)
+sum_data<-data_prov%>%group_by(Nacimiento, Residencia)%>%summarise(value=n())
+sum(sum_data$value)
+
+sum_data<-sum_data%>%group_by(Nacimiento)%>%mutate(Nacimiento_jovenes=round(sum(value)*100/(nrow(haplotipos)),3))%>%ungroup()
+sum_data<-sum_data%>%group_by(Residencia)%>%mutate(Residencia_jovenes=round(sum(value)*100/(nrow(haplotipos)),3))%>%ungroup()
+sum_data<-sum_data%>%mutate(migra=ifelse(Nacimiento!=Residencia, "Migrante", "No_migrante"))
+sum_data<-sum_data%>%group_by(Nacimiento, migra)%>%mutate(migra_nac=sum(value), migra_nac_rel=migra_nac/Nacimiento_jovenes)%>%ungroup()
+sum_data<-sum_data%>%group_by(Residencia, migra)%>%mutate(migra_res=sum(value), migra_res_rel=migra_res/Residencia_jovenes)%>%ungroup()
+kable(head(sum_data))
+```
+
+```{r complete_df}
+complete_df<-full_join( sum_data,censos2[,c(1,4)], by=c("Nacimiento"="Provincia"))
+complete_df<-full_join( complete_df,censos2[,c(1,5)], by=c("Residencia"="Provincia"))
+```
+
+Al comparar la distribucion de la poblacion argentina en 1980 con la distribucion de los Nacimientos declarados de los 2700 jovenes, notamos grandes similitudes. Hay una sobrerepresentacion importante de CABA, en detrimento de una subrepresentacion de la mayoria de las otras provincias.
+
+```{r 1980_nac}
+complete_df%>%pivot_longer(cols=c(Nacimiento_jovenes,prop_censo_1980), values_to = "pobl_1980", names_to = "origen")%>%
+  ggplot(aes(Nacimiento, pobl_1980, fill=origen))+geom_bar(stat="identity", position="dodge")+theme(axis.text.x   = element_text(angle = 90))+ggtitle("Nacimiento - 1980")+ylab("Poblacion 1980 (%)")
+```
+
+Al hacer un test de chi-cuadrado para determinar si siguen distribuciones significativamente distintas, da no significativo, por lo que todo indicaria que los jovenes conforman un buen muestreo geografico del pais en 1980.
+
+```{r ch1}
+complete_df%>%select(Nacimiento, Nacimiento_jovenes, prop_censo_1980)%>%unique()->Nac
+chisq.test(Nac$Nacimiento_jovenes,Nac$prop_censo_1980)
+```
+
+Al igual que para Nacimientos vs censo de 1980, al comparar las residencias vs el censo 2010, hay grandes similitudes. Resalta nuevamente la sobrerrepresentacion de jovenes de CABA y subrepresentacion de otras provincias. 
+
+```{r 2010_res}
+complete_df%>%pivot_longer(cols=c(Residencia_jovenes,prop_censo_2010), values_to = "pobl_2010", names_to = "origen")%>%
+  ggplot(aes(Residencia, pobl_2010, fill=origen))+geom_bar(stat="identity", position="dodge")+theme(axis.text.x   = element_text(angle = 90))+ggtitle("Residencia - 2010")+ylab("Poblacion 2010 (%)")
+```
+
+Nuevamente el test de chi-cuadrado da no significativo
+
+```{r chi2}
+complete_df%>%select(Residencia, Residencia_jovenes, prop_censo_2010)%>%unique()->Res
+chisq.test(Res$Residencia_jovenes,Res$prop_censo_2010)
+```
+
+### Comparacion con lugar de desaparicion
+
+A su vez, resulta interesante comparar estos datos de nacimiento alegado de los jovenes con los lugares de desaparicion de la madres. (Desafortunadamente esto solo se puede hacer para los GF y no para MVT porque no contamos con sus datos). Lo ideal sería una coincidencia en la distribucion (entendiendo que nunca sera muy precisa por el N bajo de bebes buscados), partiendo de la hipotesis de que la mayoría de los bebes no fueron trasladados de provincia.  
+
+```{r gf}
+GF<-read_xlsx("data/Distribucion_GF.xlsx")
+GF<-select(GF, LEG., Provincia)%>%filter(!is.na(Provincia))%>%count(Provincia)%>%mutate(pobl_1980=n*100/sum(n))%>%mutate(origen="Lugar_desaparicion")%>%select(-n,Provincia, origen, pobl_1980)%>%rename(Nacimiento=Provincia)
+ggplot(GF, aes(Nacimiento, pobl_1980))+geom_col(fill="darkblue")+xlab("Lugar desaparicion")+ylab("Frecuencia(%)")
+complete_df2<-complete_df%>%select(Nacimiento, Nacimiento_jovenes, prop_censo_1980)%>%rename(Nacimiento_jovenes=Nacimiento_jovenes)%>%pivot_longer(cols=c(Nacimiento_jovenes,prop_censo_1980), values_to = "pobl_1980", names_to = "origen")%>%rbind(GF)
+ggplot(complete_df2, aes(Nacimiento, pobl_1980, fill=origen))+geom_col(position="dodge")+theme(axis.text.x = element_text(angle = 90))+xlab("Provincia")+ylab("Frecuencia(%)")
+```
+
+
+### Análisis poblacional por Región
+
+Los resultados por region son similares a los observados previamente por provincias
+
+```{r region}
+nac_df<-haplotipos%>%group_by(Nacimiento)%>%summarise(abs_nac=n())
+res_df<-haplotipos%>%group_by(Residencia)%>%summarise(abs_res=n(), Region=Region_res)%>%unique()
+nac_res_df<-full_join(nac_df, res_df, by=c("Nacimiento"="Residencia"))%>%
+  mutate_all(~replace(., is.na(.), 0))%>%
+  mutate(migracion_neta=abs_res-abs_nac, Migracion_Neta_jovenes=migracion_neta/abs_res)
+nac_res_df<-nac_res_df%>%group_by(Region)%>%
+  mutate(abs_nac_reg=sum(abs_nac),abs_res_reg=sum(abs_res), migr_neta_reg=abs_res_reg-abs_nac_reg, migr_rel_reg=migr_neta_reg/abs_res_reg)
+nac_res_df<-full_join(censos2, nac_res_df, by=c("Provincia"="Nacimiento"))%>%
+  mutate(migr_neta_censo=censo_2010-censo_1980, migr_rel_censo=migr_neta_censo/censo_2010,
+         Migracion_Neta_censo=migr_rel_censo-mean(migr_rel_censo))
+
+nac_res_reg<-nac_res_df%>%group_by(Region)%>%summarise(censo_1980_regional=sum(censo_1980), censo_2010_regional=sum(censo_2010), censo_1980_regional_=100*sum(prop_censo_1980/100), censo_2010_regional_=100*sum(prop_censo_2010/100), Nacimiento_jovenes_regional=abs_nac_reg*100/nrow(haplotipos), Residencia_jovenes_regional=abs_res_reg*100/nrow(haplotipos) )
+
+nac_res_reg%>%pivot_longer(cols=c(censo_1980_regional_,Nacimiento_jovenes_regional ), names_to="Origen", values_to= "Poblacion")%>%
+  ggplot(aes(Region, Poblacion, fill=Origen))+geom_bar(position="dodge", stat="identity")
+nac_res_reg%>%pivot_longer(cols=c(censo_2010_regional_,Residencia_jovenes_regional ), names_to="Origen", values_to= "Poblacion")%>%
+  ggplot(aes(Region, Poblacion, fill=Origen))+geom_bar(position="dodge", stat="identity")
+```
+
+
+### Analisis de migraciones
+
+El siguiente objetivo es analizar el flujo poblacional entre esos 30-40 años.
+Para ello, se calculó la migracion relativa neta de cada provincia, para el caso del censo como para los jovenes. La migracion neta la calculo como la poblacion en 2010 (o residencia) menos la poblacion en 1980 (o nacimiento). A su vez, es importante relativizarla por la población de referencia, que en en este caso se tomó la de 2010.
+
+Es decir: migracion_neta_rel = (2010-1980)/2010
+
+Valores positivos indican una ganancia de población entre 1980 y 2010, y negativos una perdida. Valores por debajo de -1 indican que la poblacion perdida es mayor a la que hay actualmente. 
+
+En los jovenes muestreados, el 34% no vive "actualmente" donde está declarado su nacimiento
+
+```{r migr1}
+sum_data%>%ggplot(aes(migra, value, fill=migra))+geom_bar(stat="identity")+xlab("Migrantes")+ylab("Poblacion")+theme(legend.title = element_blank())
+```
+
+En los siguientes graficos se analiza la migración neta de los jovenes por provincia, tanto en numero absolutos (Residencia-Nacimiento), o como migracion_neta_rel
+
+```{r migracion}
+
+nac_res_df%>%ggplot(aes(Provincia, migracion_neta, fill=Region))+
+  geom_bar(stat="identity")+
+  theme(axis.text.x   = element_text(angle = 90))+
+  xlab("Provincia")
+nac_res_df%>%mutate(migr_neta_rel_res=migracion_neta/abs_res)%>%ggplot(aes(Provincia, migr_neta_rel_res, fill=Region))+
+  geom_bar(stat="identity")+
+  theme(axis.text.x   = element_text(angle = 90))+
+  xlab("Provincia")
+```
+
+Otra forma de analizar el flujo de personas es con los Sankey plots. En este caso a partir de las regiones, dado que por provincia es demasiada informacion para comprenderse. 
+
+
+```{r sanki}
+library(networkD3)
+regiones<-nac_res_df%>%select(Provincia,Region)%>%mutate(Region=ifelse(Region%in%c("Buenos Aires","CABA"), "Bs.As. + CABA", Region))
+sum_data2<-sum_data%>%left_join(regiones, by=c("Nacimiento"="Provincia"))%>%rename(Region_Nacimiento=Region)
+sum_data2<-sum_data2%>%left_join(regiones, by=c("Residencia"="Provincia"))%>%rename(Region_Residencia=Region)
+sum_data2<-sum_data2%>%group_by(Region_Nacimiento,Region_Residencia)%>%summarise(value=sum(value))
+
+sum_data2<-sum_data2%>%mutate(Region_Residencia=paste0(Region_Residencia, " "))
+nodes <- data.frame(
+  name=c(as.character(sum_data2$Region_Nacimiento), 
+         as.character(sum_data2$Region_Residencia)) %>% unique()
+)
+
+sum_data2$IDsource <- match(sum_data2$Region_Nacimiento, nodes$name)-1 
+sum_data2$IDtarget <- match(sum_data2$Region_Residencia, nodes$name)-1
+
+
+
+sanki<-sankeyNetwork(Links = sum_data2, Nodes = nodes,
+              Source = "IDsource", Target = "IDtarget",
+              Value = "value", NodeID = "name",
+              sinksRight = F, fontSize = 10,fontFamily = "arial" , nodeWidth = 50,
+              nodePadding = 5)
+sanki
+```
+
+
+
+
+Por ultimo, comparo los flujos netos de migracion de los jovenes con la informacion de los censos
+
+En este caso, observamos grandes disparidades en algunos casos, posiblemente por el bajo N en ciertas provincias, donde pequeños cambios poblacionales generan un gran cambio relativo.
+
+```{r migr_censo}
+nac_res_df%>%pivot_longer(cols=c(Migracion_Neta_jovenes, Migracion_Neta_censo), names_to  = "Origen", values_to = "Migracion_neta_rel")%>%
+  ggplot(aes(Provincia, Migracion_neta_rel, fill=Origen))+
+  geom_bar(stat="identity", position="dodge")+
+  theme(axis.text.x   = element_text(angle = 90))+
+  xlab("Provincia")
+```
+
